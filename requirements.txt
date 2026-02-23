@@ -1,0 +1,12 @@
+streamlit
+streamlit-lottie
+requests
+PyPDF2
+Pillow
+torch
+transformers
+faiss-cpu
+langchain-text-splitters
+langchain-huggingface
+langchain-community
+langchain-google-genai
