@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_lottie import st_lottie
 import requests, json, os, time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from PyPDF2 import PdfReader
 from PIL import Image
@@ -44,6 +44,17 @@ def _auth_headers(access_token: Optional[str] = None) -> Dict[str, str]:
 def _auth_request(method: str, path: str, **kwargs) -> requests.Response:
     url = f"{SUPABASE_URL}{path}"
     return requests.request(method, url, headers=_auth_headers(), timeout=10, **kwargs)
+
+
+def _db_request(method: str, path: str, access_token: str, **kwargs) -> requests.Response:
+    url = f"{SUPABASE_URL}{path}"
+    return requests.request(
+        method,
+        url,
+        headers=_auth_headers(access_token),
+        timeout=10,
+        **kwargs,
+    )
 
 
 def set_session(access_token: str, refresh_token: str, user: Dict[str, Any]) -> None:
@@ -138,6 +149,7 @@ defaults = {
     "chat_history": [],
     "current_pdf_id": None,
     "guest": False,
+    "history_loaded": False,
 }
 
 for k, v in defaults.items():
@@ -194,6 +206,56 @@ def login_ui():
             if st.button("Continue as guest"):
                 st.session_state["guest"] = True
                 st.rerun()
+
+
+# -------------------- CHAT HISTORY PERSISTENCE (Supabase) --------------------
+def load_chat_history_from_db() -> None:
+    """Load PDF chat history for the current user from Supabase into session_state."""
+    if st.session_state.get("guest"):
+        return
+    user = current_user()
+    token = _current_token()
+    if not user or not token:
+        return
+
+    resp = _db_request(
+        "GET",
+        "/rest/v1/chat_history"
+        "?select=question,answer,mode,created_at"
+        f"&user_id=eq.{user['id']}"
+        "&mode=eq.pdf"
+        "&order=created_at.asc",
+        access_token=token,
+    )
+    if resp.status_code >= 400:
+        return
+
+    rows: List[Dict[str, Any]] = resp.json()
+    st.session_state.chat_history = [(r["question"], r["answer"]) for r in rows]
+    st.session_state.history_loaded = True
+
+
+def save_chat_to_db(question: str, answer: str) -> None:
+    """Append a single PDF QA pair to Supabase chat_history."""
+    if st.session_state.get("guest"):
+        return
+    user = current_user()
+    token = _current_token()
+    if not user or not token:
+        return
+
+    payload = {
+        "user_id": user["id"],
+        "mode": "pdf",
+        "question": question,
+        "answer": answer,
+    }
+    _db_request(
+        "POST",
+        "/rest/v1/chat_history",
+        access_token=token,
+        json=payload,
+    )
 
 # -------------------- IMAGE Q&A --------------------
 def answer_image_question(image, question):
@@ -276,6 +338,9 @@ if mode == "📘 PDF Analyzer":
             st.session_state.vector_db = None
             st.session_state.chat_history = []
 
+        if (not st.session_state.get("history_loaded")) and (not st.session_state.get("guest")):
+            load_chat_history_from_db()
+
         if st.session_state.vector_db is None:
             with st.spinner("Processing PDF..."):
                 reader = PdfReader(pdf)
@@ -329,6 +394,7 @@ Rules:
                 answer = res
 
             st.session_state.chat_history.append((q, answer))
+            save_chat_to_db(q, answer)
 
         # -------- CHAT DISPLAY (QUESTION ON TOP, ANSWER BELOW) --------
         st.markdown("## 💬 Conversation")
